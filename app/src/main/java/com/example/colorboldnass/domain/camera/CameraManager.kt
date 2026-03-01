@@ -28,7 +28,7 @@ import com.example.colorboldnass.domain.filter.ColorBlindnessSurfaceProcessor
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Locale
-import java.util.concurrent.Executor
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import androidx.core.util.Consumer
 
@@ -42,7 +42,8 @@ class CameraManager(private val context: Context) {
     private var recorder: Recorder? = null
     private var camera: Camera? = null
     
-    private val glExecutor = Executors.newSingleThreadExecutor()
+    // Делаем Executor nullable, чтобы пересоздавать его
+    private var glExecutor: ExecutorService? = null
     private var surfaceProcessor: ColorBlindnessSurfaceProcessor? = null
     
     var currentColorBlindnessMode: ColorBlindnessMode = ColorBlindnessMode.NORMAL
@@ -53,7 +54,7 @@ class CameraManager(private val context: Context) {
 
     private class ColorBlindnessEffect(
         targets: Int,
-        executor: Executor,
+        executor: java.util.concurrent.Executor,
         surfaceProcessor: ColorBlindnessSurfaceProcessor,
         errorListener: Consumer<Throwable>
     ) : CameraEffect(targets, executor, surfaceProcessor, errorListener)
@@ -71,28 +72,21 @@ class CameraManager(private val context: Context) {
             try {
                 cameraProvider = cameraProviderFuture.get()
                 
-                // Рассчитываем соотношение сторон экрана
-                val aspectRatio = screenAspectRatio()
+                // 1. Всегда создаем НОВЫЙ поток для графики при старте
+                if (glExecutor == null || glExecutor!!.isShutdown) {
+                    glExecutor = Executors.newSingleThreadExecutor()
+                }
                 
-                // Настраиваем ResolutionSelector для высокого разрешения
+                val aspectRatio = screenAspectRatio()
                 val resolutionSelector = ResolutionSelector.Builder()
-                    .setAspectRatioStrategy(
-                        AspectRatioStrategy(
-                            aspectRatio,
-                            AspectRatioStrategy.FALLBACK_RULE_AUTO
-                        )
-                    )
-                    .setResolutionStrategy(
-                        ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY
-                    )
+                    .setAspectRatioStrategy(AspectRatioStrategy(aspectRatio, AspectRatioStrategy.FALLBACK_RULE_AUTO))
+                    .setResolutionStrategy(ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY)
                     .build()
 
                 val preview = Preview.Builder()
                     .setResolutionSelector(resolutionSelector)
                     .build()
-                    .apply {
-                        setSurfaceProvider(previewSurfaceProvider)
-                    }
+                    .apply { setSurfaceProvider(previewSurfaceProvider) }
 
                 imageCapture = ImageCapture.Builder()
                     .setResolutionSelector(resolutionSelector)
@@ -100,23 +94,19 @@ class CameraManager(private val context: Context) {
                     .build()
 
                 recorder = Recorder.Builder()
-                    .setQualitySelector(
-                        QualitySelector.fromOrderedList(
-                            listOf(Quality.UHD, Quality.FHD, Quality.HD)
-                        )
-                    )
+                    .setQualitySelector(QualitySelector.fromOrderedList(listOf(Quality.UHD, Quality.FHD, Quality.HD)))
                     .build()
                 videoCapture = VideoCapture.withOutput(recorder!!)
 
-                // Инициализируем GPU процессор
-                surfaceProcessor = ColorBlindnessSurfaceProcessor(glExecutor)
+                // 2. Всегда создаем НОВЫЙ процессор для новой сессии
+                surfaceProcessor = ColorBlindnessSurfaceProcessor(glExecutor!!)
                 surfaceProcessor?.setColorMode(currentColorBlindnessMode)
 
                 val effect = ColorBlindnessEffect(
                     CameraEffect.PREVIEW or CameraEffect.VIDEO_CAPTURE or CameraEffect.IMAGE_CAPTURE,
-                    glExecutor,
+                    glExecutor!!,
                     surfaceProcessor!!
-                ) { Log.e(TAG, "Эффект камеры ошибка", it) }
+                ) { Log.e(TAG, "Эффект камеры: критическая ошибка", it) }
 
                 val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
                 
@@ -128,11 +118,7 @@ class CameraManager(private val context: Context) {
                     .build()
 
                 cameraProvider?.unbindAll()
-                camera = cameraProvider?.bindToLifecycle(
-                    lifecycleOwner,
-                    cameraSelector,
-                    useCaseGroup
-                )
+                camera = cameraProvider?.bindToLifecycle(lifecycleOwner, cameraSelector, useCaseGroup)
 
                 onSuccess()
             } catch (exc: Exception) {
@@ -141,13 +127,19 @@ class CameraManager(private val context: Context) {
         }, ContextCompat.getMainExecutor(context))
     }
 
-    // Метод для управления зумом
     fun setZoom(zoomRatio: Float) {
         camera?.cameraControl?.setZoomRatio(zoomRatio)
     }
 
-    // Метод для получения текущего состояния зума
     fun getZoomState() = camera?.cameraInfo?.zoomState
+
+    fun toggleFlash(enable: Boolean) {
+        camera?.cameraControl?.enableTorch(enable)
+    }
+
+    fun hasFlashUnit(): Boolean {
+        return camera?.cameraInfo?.hasFlashUnit() ?: false
+    }
 
     private fun screenAspectRatio(): Int {
         val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -165,16 +157,11 @@ class CameraManager(private val context: Context) {
             height = dm.heightPixels
         }
         val ratio = maxOf(width, height).toDouble() / minOf(width, height).toDouble()
-        return if (Math.abs(ratio - 4.0 / 3.0) <= Math.abs(ratio - 16.0 / 9.0)) {
-            AspectRatio.RATIO_4_3
-        } else {
-            AspectRatio.RATIO_16_9
-        }
+        return if (Math.abs(ratio - 4.0 / 3.0) <= Math.abs(ratio - 16.0 / 9.0)) AspectRatio.RATIO_4_3 else AspectRatio.RATIO_16_9
     }
 
-    fun takePhoto(outputFile: File, executor: Executor, onSuccess: (File) -> Unit, onError: (ImageCaptureException) -> Unit) {
-        val imageCapture = imageCapture ?: return
-        imageCapture.takePicture(
+    fun takePhoto(outputFile: File, executor: java.util.concurrent.Executor, onSuccess: (File) -> Unit, onError: (ImageCaptureException) -> Unit) {
+        imageCapture?.takePicture(
             ImageCapture.OutputFileOptions.Builder(outputFile).build(),
             executor,
             object : ImageCapture.OnImageSavedCallback {
@@ -188,22 +175,22 @@ class CameraManager(private val context: Context) {
     fun getOutputFileName() = "IMG_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())}.jpg"
     fun getVideoFileName() = "VID_${SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(System.currentTimeMillis())}.mp4"
 
-    fun getOutputDirectory(): File {
-        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "ColorBoldnass")
-        dir.mkdirs()
-        return dir
-    }
-    
-    fun getVideoOutputDirectory(): File {
-        val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "ColorBoldnass")
-        dir.mkdirs()
-        return dir
-    }
+    fun getOutputDirectory(): File = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "ColorBoldnass").apply { mkdirs() }
+    fun getVideoOutputDirectory(): File = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "ColorBoldnass").apply { mkdirs() }
 
     fun releaseCamera() {
-        cameraProvider?.unbindAll()
-        surfaceProcessor?.release()
-        glExecutor.shutdown()
-        camera = null
+        try {
+            cameraProvider?.unbindAll()
+            // Сначала освобождаем процессор, пока поток еще жив
+            surfaceProcessor?.release()
+            // Затем закрываем поток
+            glExecutor?.shutdown()
+            
+            camera = null
+            surfaceProcessor = null
+            glExecutor = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Ошибка при освобождении камеры", e)
+        }
     }
 }

@@ -20,6 +20,7 @@ import java.util.concurrent.Executor
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.concurrent.RejectedExecutionException
 
 private const val TAG = "ColorBlindnessProcessor"
 
@@ -36,24 +37,40 @@ class ColorBlindnessSurfaceProcessor(private val glExecutor: Executor) : Surface
     private var inputTextureId = -1
     private var program = -1
     
+    @Volatile
+    private var isReleased = false
+    
+    // Безопасная обертка для Executor, которая не кидает RejectedExecutionException
+    private val safeGlExecutor = Executor { command ->
+        if (!isReleased) {
+            try {
+                glExecutor.execute(command)
+            } catch (e: RejectedExecutionException) {
+                Log.w(TAG, "Задача отклонена: исполнитель завершает работу")
+            }
+        }
+    }
+
     private var currentColorMode = ColorBlindnessMode.NORMAL
     private val outputSurfaces = mutableMapOf<SurfaceOutput, EGLSurface>()
 
-    // Геометрия: Full-screen quad
     private val vertexBuffer: FloatBuffer = ByteBuffer.allocateDirect(8 * 4)
         .order(ByteOrder.nativeOrder()).asFloatBuffer()
         .put(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)).position(0) as FloatBuffer
     
-    // Текстурные координаты (стандартные 0-1)
     private val texCoordBuffer: FloatBuffer = ByteBuffer.allocateDirect(8 * 4)
         .order(ByteOrder.nativeOrder()).asFloatBuffer()
         .put(floatArrayOf(0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f)).position(0) as FloatBuffer
 
     init {
-        glExecutor.execute {
+        safeExecute {
             initEGL()
             initGL()
         }
+    }
+
+    private fun safeExecute(block: () -> Unit) {
+        safeGlExecutor.execute(block)
     }
 
     fun setColorMode(mode: ColorBlindnessMode) {
@@ -61,30 +78,40 @@ class ColorBlindnessSurfaceProcessor(private val glExecutor: Executor) : Surface
     }
 
     override fun onInputSurface(surfaceRequest: SurfaceRequest) {
-        glExecutor.execute {
+        safeExecute {
+            if (isReleased) return@safeExecute
             inputTextureId = createExternalTexture()
             inputSurfaceTexture = SurfaceTexture(inputTextureId)
             inputSurfaceTexture?.setOnFrameAvailableListener(this, handler)
             
             val surface = Surface(inputSurfaceTexture)
-            // Важно установить размер, чтобы сенсор знал разрешение
             inputSurfaceTexture?.setDefaultBufferSize(surfaceRequest.resolution.width, surfaceRequest.resolution.height)
             
-            surfaceRequest.provideSurface(surface, glExecutor) {
-                surface.release()
-                inputSurfaceTexture?.release()
-                inputSurfaceTexture = null
-                GLES20.glDeleteTextures(1, intArrayOf(inputTextureId), 0)
+            // Передаем safeGlExecutor для слушателя очистки
+            surfaceRequest.provideSurface(surface, safeGlExecutor) {
+                safeExecute {
+                    surface.release()
+                    inputSurfaceTexture?.release()
+                    inputSurfaceTexture = null
+                    if (inputTextureId != -1) {
+                        GLES20.glDeleteTextures(1, intArrayOf(inputTextureId), 0)
+                        inputTextureId = -1
+                    }
+                }
             }
         }
     }
 
     override fun onOutputSurface(surfaceOutput: SurfaceOutput) {
-        glExecutor.execute {
-            val surface = surfaceOutput.getSurface(glExecutor) {
-                val eglSurface = outputSurfaces.remove(surfaceOutput)
-                if (eglSurface != null) {
-                    EGL14.eglDestroySurface(eglDisplay, eglSurface)
+        safeExecute {
+            if (isReleased) return@safeExecute
+            // Используем safeGlExecutor для получения поверхности и слушателя очистки
+            val surface = surfaceOutput.getSurface(safeGlExecutor) {
+                safeExecute {
+                    val eglSurface = outputSurfaces.remove(surfaceOutput)
+                    if (eglSurface != null && eglDisplay != EGL14.EGL_NO_DISPLAY) {
+                        EGL14.eglDestroySurface(eglDisplay, eglSurface)
+                    }
                 }
             }
             val eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, intArrayOf(EGL14.EGL_NONE), 0)
@@ -93,8 +120,9 @@ class ColorBlindnessSurfaceProcessor(private val glExecutor: Executor) : Surface
     }
 
     override fun onFrameAvailable(surfaceTexture: SurfaceTexture?) {
-        glExecutor.execute {
-            render()
+        if (isReleased) return
+        safeExecute {
+            if (!isReleased) render()
         }
     }
 
@@ -127,21 +155,22 @@ class ColorBlindnessSurfaceProcessor(private val glExecutor: Executor) : Surface
 
     private fun render() {
         val st = inputSurfaceTexture ?: return
+        if (eglDisplay == EGL14.EGL_NO_DISPLAY || eglContext == EGL14.EGL_NO_CONTEXT) return
+
         try {
             st.updateTexImage()
         } catch (e: Exception) {
             return
         }
 
-        // Получаем базовую матрицу от SurfaceTexture
         val stMatrix = FloatArray(16)
         st.getTransformMatrix(stMatrix)
 
         for ((output, eglSurface) in outputSurfaces) {
+            if (eglSurface == EGL14.EGL_NO_SURFACE) continue
+            
             EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
             
-            // 1. Рассчитываем ФИНАЛЬНУЮ матрицу для каждого выхода (Preview, Video и т.д.)
-            // Это исправляет сплюснутость и ориентацию автоматически!
             val finalMatrix = FloatArray(16)
             output.updateTransformMatrix(finalMatrix, stMatrix)
             
@@ -154,7 +183,6 @@ class ColorBlindnessSurfaceProcessor(private val glExecutor: Executor) : Surface
             val uColorMode = GLES20.glGetUniformLocation(program, "uColorMode")
             GLES20.glUniform1i(uColorMode, currentColorMode.ordinal)
 
-            // Рендеринг
             val posLoc = GLES20.glGetAttribLocation(program, "aPosition")
             val texLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
             
@@ -188,7 +216,6 @@ class ColorBlindnessSurfaceProcessor(private val glExecutor: Executor) : Surface
             uniform mat4 uTexMatrix;
             void main() {
                 gl_Position = aPosition;
-                // Применяем матрицу трансформации к координатам текстуры
                 vTexCoord = (uTexMatrix * vec4(aTexCoord, 0.0, 1.0)).xy;
             }
         """.trimIndent()
@@ -199,22 +226,13 @@ class ColorBlindnessSurfaceProcessor(private val glExecutor: Executor) : Surface
             varying vec2 vTexCoord;
             uniform samplerExternalOES sTexture;
             uniform int uColorMode;
-
-            // Матрицы цветокоррекции
             vec3 applyFilter(vec3 rgb, int mode) {
-                if (mode == 1) { // Protanopia
-                    return mat3(0.56667, 0.55833, 0.0, 0.43333, 0.44167, 0.24167, 0.0, 0.0, 0.75833) * rgb;
-                } else if (mode == 2) { // Deuteranopia
-                    return mat3(0.625, 0.70, 0.0, 0.375, 0.30, 0.30, 0.0, 0.0, 0.70) * rgb;
-                } else if (mode == 3) { // Tritanopia
-                    return mat3(0.95, 0.0, 0.0, 0.05, 0.43333, 0.475, 0.0, 0.56667, 0.525) * rgb;
-                } else if (mode == 4) { // Achromatopsia
-                    float gray = dot(rgb, vec3(0.299, 0.587, 0.114));
-                    return vec3(gray);
-                }
+                if (mode == 1) return mat3(0.56667, 0.55833, 0.0, 0.43333, 0.44167, 0.24167, 0.0, 0.0, 0.75833) * rgb;
+                if (mode == 2) return mat3(0.625, 0.70, 0.0, 0.375, 0.30, 0.30, 0.0, 0.0, 0.70) * rgb;
+                if (mode == 3) return mat3(0.95, 0.0, 0.0, 0.05, 0.43333, 0.475, 0.0, 0.56667, 0.525) * rgb;
+                if (mode == 4) return vec3(dot(rgb, vec3(0.299, 0.587, 0.114)));
                 return rgb;
             }
-
             void main() {
                 vec4 color = texture2D(sTexture, vTexCoord);
                 gl_FragColor = vec4(applyFilter(color.rgb, uColorMode), color.a);
@@ -237,12 +255,21 @@ class ColorBlindnessSurfaceProcessor(private val glExecutor: Executor) : Surface
     }
     
     fun release() {
-        glExecutor.execute {
+        isReleased = true
+        handlerThread.quitSafely()
+        // Используем безопасный исполнитель для финальной очистки
+        safeExecute {
             outputSurfaces.values.forEach { EGL14.eglDestroySurface(eglDisplay, it) }
             outputSurfaces.clear()
-            GLES20.glDeleteProgram(program)
-            EGL14.eglTerminate(eglDisplay)
-            handlerThread.quitSafely()
+            if (program != -1) {
+                GLES20.glDeleteProgram(program)
+                program = -1
+            }
+            if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
+                EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+                EGL14.eglTerminate(eglDisplay)
+                eglDisplay = EGL14.EGL_NO_DISPLAY
+            }
         }
     }
 }

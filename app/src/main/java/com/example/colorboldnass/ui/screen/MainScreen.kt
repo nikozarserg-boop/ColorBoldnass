@@ -1,7 +1,7 @@
 package com.example.colorboldnass.ui.screen
 
 import android.Manifest
-import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.AlertDialog
@@ -27,7 +27,6 @@ fun MainScreen(
     modifier: Modifier = Modifier
 ) {
     // Требуемые разрешения для приложения камеры
-    // НЕ требуются разрешения на хранилище для сохранения в галерею (Android 10+)
     val requiredPermissions = buildList {
         add(Manifest.permission.CAMERA)
         add(Manifest.permission.RECORD_AUDIO)
@@ -38,6 +37,12 @@ fun MainScreen(
     )
 
     val isOnCameraScreen = remember { mutableStateOf(true) }
+
+    // Обработка кнопки "Назад"
+    // Если мы не на экране камеры (т.е. в галерее), кнопка назад вернет нас на камеру
+    BackHandler(enabled = !isOnCameraScreen.value) {
+        isOnCameraScreen.value = true
+    }
 
     // Проверка разрешений при первой загрузке
     LaunchedEffect(Unit) {
@@ -93,13 +98,6 @@ private fun PermissionRequiredScreen(
                     "• Запись звука\n\n" +
                     "Это необходимо для съёмки фото и видео.\n" +
                     "Фото и видео автоматически сохраняются в галерею.\n\n" +
-                    "ВАЖНО: При запросе разрешений выберите\n" +
-                    "\"Разрешить\", \"Всегда разрешить\",\n" +
-                    "или \"Allow\"\n" +
-                    "(не \"один раз\" и не \"только в приложении\")\n\n" +
-                    "Если разрешения были отклонены ранее:\n" +
-                    "Откройте Настройки → Приложения → ColorBoldnass → Разрешения\n" +
-                    "и разрешите доступ к Камере и Микрофону.\n\n" +
                     "Пожалуйста, предоставьте разрешения для продолжения."
                 )
             },

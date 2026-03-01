@@ -1,6 +1,7 @@
 package com.example.colorboldnass.ui.screen
 
 import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.camera.core.Preview
 import androidx.camera.core.ZoomState
 import androidx.camera.video.FileOutputOptions
@@ -24,6 +25,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -83,10 +86,22 @@ fun CameraScreen(
 
     // Инициализируем камеру
     val cameraManager = remember { CameraManager(context) }
+    
+    // Освобождаем ресурсы при выходе из экрана (например, переход в галерею)
+    DisposableEffect(Unit) {
+        onDispose {
+            android.util.Log.d("CameraScreen", "Освобождение ресурсов камеры")
+            cameraManager.releaseCamera()
+        }
+    }
+
     var isCameraReady by remember { mutableStateOf(false) }
     var showSuccessMessage by remember { mutableStateOf(false) }
     var successText by remember { mutableStateOf("") }
     var currentRecording by remember { mutableStateOf<androidx.camera.video.Recording?>(null) }
+    
+    // Состояние вспышки
+    var isFlashOn by remember { mutableStateOf(false) }
 
     // Переменные для управления зумом
     var zoomRatio by remember { mutableStateOf(1f) }
@@ -276,8 +291,30 @@ fun CameraScreen(
 
                  Spacer(modifier = Modifier.weight(1f))
 
-                 // Пустое место для симметрии
-                 Box(modifier = Modifier.size(60.dp))
+                 // Кнопка вспышки справа от кнопки записи
+                 Button(
+                     onClick = {
+                         if (isCameraReady && cameraManager.hasFlashUnit()) {
+                             isFlashOn = !isFlashOn
+                             cameraManager.toggleFlash(isFlashOn)
+                         } else if (isCameraReady) {
+                             viewModel.setErrorMessage("Вспышка недоступна")
+                         }
+                     },
+                     colors = ButtonDefaults.buttonColors(
+                         containerColor = if (isFlashOn) Color(0xFFFFC107) else Color.DarkGray
+                     ),
+                     shape = RoundedCornerShape(12.dp),
+                     modifier = Modifier
+                         .size(60.dp)
+                         .padding(4.dp)
+                 ) {
+                     Icon(
+                         imageVector = if (isFlashOn) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                         contentDescription = "Вспышка",
+                         tint = Color.White
+                     )
+                 }
              }
 
             if (isRecording && captureMode == CaptureMode.VIDEO) {
