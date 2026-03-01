@@ -1,0 +1,38 @@
+<resources>
+    <string name="app_name">ColorBoldnass</string>
+    
+    <!-- Основные экраны -->
+    <string name="main_title">Симулятор цветовой слепоты</string>
+    <string name="camera_screen">Камера</string>
+    <string name="gallery_screen">Галерея</string>
+    
+    <!-- Режимы цветовой слепоты -->
+    <string name="mode_normal">Нормальное зрение</string>
+    <string name="mode_protanopia">Протанопия</string>
+    <string name="mode_deuteranopia">Дейтеранопия</string>
+    <string name="mode_tritanopia">Тританопия</string>
+    <string name="mode_achromatopsia">Монохроматизм</string>
+    
+    <!-- Режимы съёмки -->
+    <string name="mode_photo">Фото</string>
+    <string name="mode_video">Видео</string>
+    
+    <!-- Кнопки -->
+    <string name="button_take_photo">Снять фото</string>
+    <string name="button_record_video">Начать запись</string>
+    <string name="button_stop_video">Остановить запись</string>
+    <string name="button_select_gallery">Выбрать из галереи</string>
+    <string name="button_save">Сохранить</string>
+    <string name="button_cancel">Отмена</string>
+    <string name="button_delete">Удалить</string>
+    <string name="button_ok">OK</string>
+    <string name="button_permission">Предоставить разрешение</string>
+    
+    <!-- Сообщения -->
+    <string name="permission_camera_required">Требуется доступ к камере</string>
+    <string name="permission_storage_required">Требуется доступ к галерее</string>
+    <string name="error_save_file">Ошибка при сохранении файла</string>
+    <string name="success_saved">Сохранено успешно</string>
+    <string name="recording">Запись видео...</string>
+    <string name="loading">Загрузка...</string>
+</resources>
