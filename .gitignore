@@ -1,15 +1,31 @@
-*.iml
-.gradle
+# Android/IntelliJ
+.gradle/
 /local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+/.idea/
+*.iml
+*.iws
+*.ipr
+
+# Build
+/build/
+/*/build/
+
+# Captures (screenshots, memory dumps)
+/captures/
+
+# External native builds
+.externalNativeBuild/
+.cxx/
+
+# Log files
+*.log
+
+# macOS
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
+
+# Misc
+*.bak
+*.swp
+/bin
+/gen
+/out
